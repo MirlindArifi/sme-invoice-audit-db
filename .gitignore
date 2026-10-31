@@ -1,7 +1,9 @@
-# SQLite database files
+# SQLite database files and locks
 *.db
 *.sqlite
 *.sqlite3
+*-wal
+*-shm
 
 # Temporary and log files
 *.log
@@ -11,5 +13,7 @@
 .DS_Store
 Thumbs.db
 
-# Editor settings
+# Editor and IDE configurations
 .vscode/
+.idea/
+*.swp
