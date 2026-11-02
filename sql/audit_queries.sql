@@ -175,3 +175,96 @@ WHERE
     OR (li.item_category IN ('OFFICE_FURNITURE', 'GENERAL_STATIONERY', 'CIVIL_CONSTRUCTION', 'BUILDING_MAINTENANCE') AND li.vat_rate = 8.00)
     OR (li.item_category IN ('IT_EQUIPMENT', 'PHARMACEUTICALS', 'TEXTBOOKS_AND_BOOKS') AND li.vat_rate = 18.00)
     OR (ROUND(li.vat_amount, 2) != ROUND(li.line_subtotal * (li.vat_rate / 100.0), 2));
+
+-- ============================================================================
+-- QUERY 4: Recorded Award Value Overrun
+-- ============================================================================
+-- Business Question:
+-- Has the cumulative amount billed against a procurement award exceeded the
+-- authorized recorded award value?
+--
+-- Accounting Context:
+-- In municipal public finance, a contract award value represents an authorized
+-- expenditure ceiling. If cumulative billing exceeds this baseline without a
+-- documented contract annex or formal amendment, it indicates unauthorized
+-- spending, budget overruns, or improper invoice allocation.
+--
+-- Expected Output on Test Dataset:
+-- - Flags Award ID 4 (Peja, Supplies): Award value € 15,000.00, total billed
+--   € 16,740.00 across 2 invoices, resulting in an overrun of € 1,740.00 (111.60%).
+-- - Ignores Award ID 2 (Control baseline: € 18,156.00 billed against € 20,000.00 ceiling).
+-- ============================================================================
+
+SELECT
+    a.award_id,
+    a.procurement_number,
+    a.authority_name,
+    a.recorded_award_value,
+    ROUND(SUM(i.recorded_total), 2) AS total_billed,
+    ROUND(SUM(i.recorded_total) - a.recorded_award_value, 2) AS overrun_amount,
+    ROUND((CAST(SUM(i.recorded_total) AS REAL) / a.recorded_award_value) * 100.0, 2) AS utilization_pct
+FROM procurement_awards a
+JOIN invoices i ON a.award_id = i.award_id
+GROUP BY
+    a.award_id,
+    a.procurement_number,
+    a.authority_name,
+    a.recorded_award_value
+HAVING
+    ROUND(SUM(i.recorded_total), 2) > a.recorded_award_value;
+
+-- ============================================================================
+-- QUERY 5: Vendor Exception Summary & Entity Mismatch
+-- ============================================================================
+-- Business Question:
+-- Part 5A: Are there invoices billed by a vendor other than the entity awarded
+-- the procurement contract?
+-- Part 5B: What is the total billed exposure and frequency of unassigned award
+-- billings across all registered vendors?
+--
+-- Accounting Context:
+-- Only the vendor legally awarded a contract is authorized to submit payment
+-- claims against it. If Vendor B submits an invoice citing an award issued to
+-- Vendor A, this represents unauthorized third-party billing, improper contract
+-- subcontracting, or severe misrouting in municipal treasury accounts.
+--
+-- Expected Output on Test Dataset:
+-- - Part 5A flags Invoice ID 24 (SYNTH-INV-2023-0502 for € 10,800.00):
+--   Awarded to Kastrioti Building & Maintenance (Vendor 3), but billed by
+--   Prishtina Medical & Pharma (Vendor 4).
+-- - Part 5B rolls up all 4 vendors, showing invoice counts, total monetary
+--   exposure, and identifying Vendor 4's 1 unauthorized submission.
+-- ============================================================================
+
+-- Part 5A: Unauthorized Third-Party Billing Detection
+SELECT
+    i.invoice_id,
+    i.invoice_number,
+    i.invoice_date,
+    i.recorded_total,
+    a.procurement_number,
+    a.authority_name,
+    aw_v.vendor_name AS awarded_vendor,
+    bill_v.vendor_name AS billing_vendor
+FROM invoices i
+JOIN procurement_awards a ON i.award_id = a.award_id
+JOIN vendors aw_v ON a.vendor_id = aw_v.vendor_id
+JOIN vendors bill_v ON i.billing_vendor_id = bill_v.vendor_id
+WHERE
+    i.billing_vendor_id != a.vendor_id;
+
+-- Part 5B: Vendor Billing & Exception Summary Rollup
+SELECT
+    v.vendor_id,
+    v.vendor_name,
+    COUNT(i.invoice_id) AS total_invoices_billed,
+    ROUND(COALESCE(SUM(i.recorded_total), 0), 2) AS total_amount_billed,
+    SUM(CASE WHEN i.billing_vendor_id != a.vendor_id THEN 1 ELSE 0 END) AS unauthorized_billing_count
+FROM vendors v
+LEFT JOIN invoices i ON v.vendor_id = i.billing_vendor_id
+LEFT JOIN procurement_awards a ON i.award_id = a.award_id
+GROUP BY
+    v.vendor_id,
+    v.vendor_name
+ORDER BY
+    total_amount_billed DESC;
