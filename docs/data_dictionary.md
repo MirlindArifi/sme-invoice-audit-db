@@ -5,6 +5,7 @@
 - **Floating-Point Limitation:** Unlike production database engines (e.g., PostgreSQL `NUMERIC(12,2)`), SQLite does not provide native arbitrary-precision fixed-point decimal arithmetic. Values with fractional components are represented internally as 64-bit IEEE floating-point numbers (`REAL`).
 - **Precision Audit Rule:** To prevent false positives caused by microscopic binary floating-point rounding artifacts (such as `0.1 + 0.2 = 0.30000000000000004`), all SQL analytical queries and reconciliation comparisons **must** wrap arithmetic calculations in `ROUND(expression, 2)`.
 - **Date Handling:** Dates are stored as ISO 8601 strings (`YYYY-MM-DD`) using `TEXT` affinity, enabling standard lexicographical comparisons and SQLite `date()` functions.
+- **Award Value Interpretation:** `recorded_award_value` is treated in this MVP as a **gross-of-VAT ceiling** for Query 4's aggregate comparison. In real Kosovo public procurement, award values are typically net-of-VAT; this is a documented simplification for the MVP, not a claim of legal accuracy.
 
 ---
 
