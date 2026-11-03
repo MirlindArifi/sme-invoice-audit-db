@@ -99,6 +99,8 @@ sqlite3 audit.db ".read sql/verify_schema.sql" 2>&1
 
 Expected output: exactly seven constraint-violation errors on STDERR (corresponding to the seven deliberate negative tests), with clean row counts on STDOUT (`1,1,1,1` inside the transaction and `0,0,0,0` post-rollback).
 
+**Note:** this verification expects a freshly initialized, unseeded database. Run it immediately after step 2. If you have already run step 4 (`seed_data.sql`), delete `audit.db` and re-initialize from step 2 before re-running the verification.
+
 ### 4. Seed the Database
 
 Populates the database with 4 vendors, 4 awards, 24 invoices, and 25 line items:
