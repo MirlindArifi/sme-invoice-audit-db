@@ -175,10 +175,11 @@ sqlite> .read sql/audit_queries.sql
 
 Record the reported wall-clock times alongside your SQLite version (`sqlite3 --version`) if you intend to quote them, because the numbers are specific to your machine.
 
-The schema deliberately defines two secondary indexes:
+The schema deliberately defines three secondary indexes:
 
-- `idx_invoices_award_id`: supports Query 4's aggregation of invoice sums by award.
-- `idx_invoices_billing_vendor`: supports Query 5's join and grouping by billing vendor.
+- `idx_invoices_award_id` — supports Query 4's aggregation of invoice sums by award.
+- `idx_invoices_billing_vendor` — supports Query 5's join and grouping by billing vendor.
+- `idx_line_items_invoice_id` — supports join operations from invoices to their line items, used by Queries 2A and 2B.
 
 These indexes demonstrate indexing practice that would matter at municipal production volumes (tens of thousands of annual procurement transactions), even though the current dataset is small enough that they have negligible impact on observed latency.
 
