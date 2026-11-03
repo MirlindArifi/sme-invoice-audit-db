@@ -1,28 +1,29 @@
 # SME Invoice Audit DB — Municipal Procurement & Tax Compliance Auditor
 
-A relational database and analytical SQL audit suite designed for municipal internal auditors and public finance controllers. The project models an audit workflow that reviews supplier invoices submitted against municipal procurement awards in Kosovo, enforcing relational integrity constraints and detecting billing anomalies, contract threshold overruns, and statutory VAT discrepancies under Kosovo Law No. 05/L-037.
+A relational database and analytical SQL audit suite designed for municipal internal auditors and public finance controllers. The project models an audit workflow that reviews supplier invoices submitted against municipal procurement awards in Kosovo, enforcing relational integrity constraints and detecting billing anomalies, contract value overruns, and potential VAT discrepancies under Kosovo Law No. 05/L-037.
 
 ---
 
 ## The Business Problem
 
 Municipal public finance departments process thousands of supplier invoices annually across public works, goods supplies, and municipal services. Manual spreadsheet reviews often fail to detect:
-- Duplicate payment claims submitted across different billing cycles.
-- Arithmetic errors between unit prices, line subtotals, and invoice headers.
-- Tax misclassifications (e.g., applying the restricted 8% reduced VAT rate to standard-rated commercial goods, or arbitrary foreign tax rates).
-- Progressive billing that silently exceeds authorized procurement contract ceilings.
-- Unauthorized third-party billing where the invoicing entity does not match the legally awarded contractor.
 
-This project implements a normalized relational database engine and reproducible SQL audit queries to automate these controls and surface explainable audit exceptions.
+- **Duplicate payment claims** submitted across billing cycles or under slightly different invoice numbers.
+- **Arithmetic errors** between unit prices, line subtotals, and invoice header totals.
+- **Potential VAT misclassifications**: for example, applying the reduced 8% rate to standard-rated commercial goods, or applying a non-statutory rate to a taxable supply.
+- **Progressive billing** that runs past the recorded procurement award value without documented amendment.
+- **Vendor-mismatch invoices** where the entity that submitted the invoice is not the entity awarded the referenced contract.
+
+This project implements a normalized relational database and reproducible SQL audit queries to automate these controls and surface explainable audit exceptions for review.
 
 ---
 
 ## Data Provenance & Ethics
 
-- **Strictly Synthetic Fixtures:** All suppliers, procurement awards, invoices, and line-item records in this database are **100% synthetic demonstration fixtures**.
-- **No Accusations Against Real Businesses:** To protect commercial reputations, fictional company names (e.g., *Dardania Tech Solutions SH.P.K.*) and synthetic tax identifiers (`SYNTH-TAX-1001`) are used exclusively. Database-level constraints (`CHECK (is_synthetic = 1)`) guarantee that non-synthetic entities cannot be stored.
-- **Administrative Context:** Municipal authority names (*Komuna e Prishtines*, *Komuna e Prizrenit*, *Komuna e Pejes*) and procurement numbering patterns (`SYNTH-616-23-001-521`) reflect authentic Kosovo public administration structures.
-- **Why Synthetic Invoices?** While public procurement platforms (e.g., KRPP) publish tender notices and award metadata, itemized supplier invoices are private treasury documents submitted directly to municipal finance departments. Modeled synthetic fixtures enable full testing of invoice-level audit logic without compromising private accounting data.
+- **Strictly synthetic fixtures.** All suppliers, procurement awards, invoices, and line-item records are **100% synthetic demonstration fixtures**. No real invoice data is used.
+- **No accusations against real businesses.** Fictional company names and synthetic tax identifiers (`SYNTH-TAX-1001`) are used exclusively. Database-level constraints (`CHECK (is_synthetic = 1)`) physically reject any non-synthetic vendor row.
+- **Administrative context.** Municipal authority names and procurement numbering patterns reflect authentic Kosovo public administration structures so that audit logic is transferable to real records.
+- **Why synthetic invoices?** Itemized supplier invoices are private treasury documents, not public procurement records. See [`docs/data_feasibility.md`](docs/data_feasibility.md) for the full source investigation.
 
 ---
 
@@ -42,63 +43,87 @@ The database is implemented in **SQLite 3** and structured in Third Normal Form 
                     N [invoice_line_items]
 ```
 
-### Core Design Decisions:
-1. **Audit Staging vs. Operational Constraints:** The `invoices.invoice_number` column intentionally lacks a `UNIQUE` constraint, and `invoice_line_items.vat_rate` permits rates between `0` and `100`. An audit staging database must be able to ingest erroneous external submissions so that analytical queries can discover and report them, rather than failing at write-time.
-2. **Third-Party Billing Audit:** Invoices carry an explicit `billing_vendor_id` foreign key, allowing Query 5 to audit whether the invoicing entity matches the legally awarded vendor on the contract (`procurement_awards.vendor_id`).
-3. **Monetary Precision Handling:** Because SQLite does not feature an arbitrary-precision fixed-point decimal type, currency amounts use `NUMERIC` affinity. All analytical calculations explicitly wrap operations in `ROUND(..., 2)` and cast expressions to floating-point (`REAL`) to avoid integer division truncation artifacts.
+### Core Design Decisions
+
+1. **Audit staging vs. operational constraints.** `invoices.invoice_number` intentionally lacks a `UNIQUE` constraint, and `invoice_line_items.vat_rate` permits any value between 0 and 100. An audit database must be able to ingest erroneous external submissions so that analytical queries can surface them rather than rejecting them at write time.
+2. **Vendor-mismatch audit.** Invoices carry an explicit `billing_vendor_id` foreign key. Query 5 compares it against `procurement_awards.vendor_id` to identify invoices submitted by an entity other than the awarded contractor.
+3. **Monetary precision handling.** SQLite does not have an arbitrary precision fixed-point decimal type, so currency amounts use `NUMERIC` affinity. All analytical calculations wrap operations in `ROUND(..., 2)` and cast to `REAL` where division is involved, to avoid integer truncation artifacts.
 
 ---
 
 ## Analytical Audit Queries & Test Results
 
-The SQL audit engine executes five core analytical queries (`sql/audit_queries.sql`), validated against positive test anomalies and clean control baselines:
+The SQL audit engine implements seven analytical queries in `sql/audit_queries.sql`, grouped into five audit categories. `sql/test_queries.sql` asserts the expected exception counts against the seed dataset.
 
-| # | Audit Query | Business Question | Test Result on Seed Dataset |
-|---|:---|:---|:---|
-| **1** | **Duplicate Invoice Reference Detection** | Has a vendor submitted the same invoice number more than once, or submitted identical amounts on the same date? | Correctly flags `SYNTH-INV-2023-0102` (Vendor 1, 2 submissions). Selectively ignores legitimate identical invoice numbers across different vendors. |
-| **2** | **Line & Header Arithmetic Reconciliation** | Do line-item calculations (`qty * price = subtotal`, `subtotal + vat = total`) and header sums match? | Flags Line 8 (subtotal error), Line 9 (line total error), and Invoice 10 (header total €500.00 vs calculated €354.00). |
-| **3** | **VAT Classification & Computation Audit** | Does the VAT rate match Law No. 05/L-037 (18% standard vs. 8% reduced under Art. 26(2)), and does `vat_amount` compute correctly? | Correctly categorizes: Line 13 (Under-taxation: 8% on furniture), Line 14 (Over-taxation: 18% on IT), Lines 15–17 (Rate outliers: 0%, 5%, 20%), Line 18 (Arithmetic difference of -€600.00). |
-| **4** | **Recorded Award Value Overrun** | Does cumulative billed invoice expenditure exceed the baseline contract award ceiling? | Flags Award 4 (Peja, Supplies): €16,740.00 billed against €15,000.00 ceiling (111.60% utilization, €1,740.00 overrun). Ignores compliant Award 2 (€18,156.00 / €20,000.00). |
-| **5** | **Vendor Exception Summary & Entity Mismatch** | Did an unauthorized vendor bill against another contractor's award, and what is each vendor's total financial exposure? | Flags Invoice 24 (Awarded to Kastrioti Works, billed by Prishtina Medical). Summarizes invoice volume and exception counts across all 4 vendors. |
+| # | Audit | Business Question | Expected Result on Seed Dataset |
+|---|---|---|---|
+| 1 | Duplicate Invoice Reference Detection | Has a vendor submitted the same invoice number more than once, or submitted distinct invoice numbers that share the same award, date, and amount? | Flags `SYNTH-INV-2023-0102` (Vendor 1, two submissions) as `DUPLICATE_INVOICE_NUMBER`, and `SYNTH-INV-2023-0103` / `SYNTH-INV-2023-0104` (Vendor 2, identical billing context) as `SUSPECTED_SPLIT_OR_DUPLICATE_CLAIM`. Correctly ignores `SYNTH-INV-2023-0101` across Vendors 1 and 2. |
+| 2 | Line & Header Arithmetic Reconciliation | Do line-item calculations (qty × price = subtotal, subtotal + VAT = total) and header sums match? | Flags Line 8 (subtotal overstated by €200.00), Line 9 (line total overstated by €130.00), and Invoice 10 (header €500.00 vs calculated €354.00, detected via `LEFT JOIN` so invoices without line items are not skipped). |
+| 3 | VAT Classification & Computation Review | Does the recorded VAT rate match the MVP's statutory schedule (18% standard, 8% reduced under Art. 26(2)), and does `vat_amount` compute correctly? | Six rows: Line 13 (`POTENTIAL_MISCLASSIFICATION_REDUCED_ON_STANDARD`), Line 14 (`POTENTIAL_OVERCHARGE_STANDARD_ON_REDUCED`), Lines 15–17 (`NON_STATUTORY_RATE`: 0%, 5%, 20%), Line 18 (`VAT_ARITHMETIC_MISMATCH`, −€600.00). Labels identify candidates for review, not conclusions of wrongdoing. |
+| 4 | Invoice Totals Exceeding Recorded Award Value | Do cumulative invoice totals for an award exceed the recorded award baseline? | Flags Award 4 (Peja, Supplies): €16,740.00 billed against a recorded award value of €15,000.00 (111.60% utilization, €1,740.00 above the baseline). Does not flag compliant awards. A flag here is a candidate for investigation, not proof of a contract breach. |
+| 5 | Vendor Mismatch & Billing Summary | Has an invoice been submitted by a vendor other than the one awarded the referenced contract, and what is each vendor's total billing and mismatch count? | 5A flags Invoice 24 (award to Kastrioti Building, billed by Prishtina Medical). 5B rolls up invoice counts, total billing, and mismatch counts across all four vendors. |
+
+**Scope note on VAT.** Only the 18% standard rate and 8% reduced rate are audited. Exempt supplies under Article 27 of Law No. 05/L-037 (including regulated public passenger transport) are outside the MVP's scope. A rate outside 8%/18% is surfaced as `NON_STATUTORY_RATE` for review, not declared invalid.
 
 ---
 
 ## Quickstart: How to Recreate and Verify
 
 ### Prerequisites
+
 - Git
 - SQLite 3 command-line interface
 
 ### 1. Clone the Repository
+
 ```powershell
 git clone https://github.com/MirlindArifi/sme-invoice-audit-db.git
 cd sme-invoice-audit-db
 ```
 
-### 2. Initialize Database Schema
-Creates the 4 normalized tables and indexes:
+### 2. Initialize the Database Schema
+
+Creates the four normalized tables and their indexes:
+
 ```powershell
 sqlite3 audit.db ".read sql/schema.sql"
 ```
 
-### 3. Run Automated Constraint & Integrity Verification
-Executes the test suite of positive insertion chains and 7 negative constraint tests:
+### 3. Run Constraint & Integrity Verification
+
+Executes the test suite of positive insertion chains and seven negative constraint tests:
+
 ```powershell
 sqlite3 audit.db ".read sql/verify_schema.sql" 2>&1
 ```
-*Expected output: Exactly 7 constraint violation errors on STDERR, with clean row counts on STDOUT.*
+
+Expected output: exactly seven constraint-violation errors on STDERR (corresponding to the seven deliberate negative tests), with clean row counts on STDOUT (`1,1,1,1` inside the transaction and `0,0,0,0` post-rollback).
 
 ### 4. Seed the Database
+
 Populates the database with 4 vendors, 4 awards, 24 invoices, and 25 line items:
+
 ```powershell
 sqlite3 audit.db ".read sql/seed_data.sql"
 ```
 
 ### 5. Execute Analytical Audit Queries
-Runs all five analytical audit queries and outputs the exception reports:
+
+Prints each exception report:
+
 ```powershell
 sqlite3 -header -column audit.db ".read sql/audit_queries.sql"
 ```
+
+### 6. Run Automated Query Regression Tests
+
+Asserts the expected exception count for each analytical query. The suite is standalone and can be run on its own against the seeded database, in any shell session:
+
+```powershell
+sqlite3 -header -column audit.db ".read sql/test_queries.sql"
+```
+
+Expected output: six rows, all reporting `PASS`.
 
 ---
 
@@ -107,46 +132,59 @@ sqlite3 -header -column audit.db ".read sql/audit_queries.sql"
 ```text
 sme-invoice-audit-db/
 ├── data/
-│   └── .gitkeep                 # Seed data and fixture directory
+│   ├── .gitkeep                      # Ensures directory is tracked by Git
+│   └── README.md                     # Seed data and fixture directory overview
 ├── docs/
-│   ├── anomaly_injection_plan.md# Test plan mapping all positive/negative test cases
-│   ├── data_dictionary.md       # Full schema specifications, types, and constraints
-│   ├── er_diagram.md            # Mermaid.js relational Entity-Relationship diagram
-│   └── modeling_strategy.md     # Ethical provenance and identifier conventions
+│   ├── anomaly_injection_plan.md     # Test plan mapping all positive/negative cases
+│   ├── data_dictionary.md            # Schema specifications, types, and constraints
+│   ├── data_feasibility.md           # Public procurement vs. private invoice investigation
+│   ├── er_diagram.md                 # Mermaid.js Entity-Relationship diagram
+│   └── modeling_strategy.md          # Ethical provenance and identifier conventions
 ├── sql/
-│   ├── audit_queries.sql        # The 5 analytical audit queries
-│   ├── schema.sql               # Core DDL schema initialization
-│   ├── seed_data.sql            # Seed dataset (24 invoices, 25 line items)
-│   └── verify_schema.sql        # Automated constraint verification suite
-├── .gitignore                   # Excludes SQLite binaries (*.db) and OS artifacts
-└── README.md                    # Project overview and documentation
+│   ├── audit_queries.sql             # Seven analytical audit queries
+│   ├── schema.sql                    # Core DDL schema initialization
+│   ├── seed_data.sql                 # Seed dataset (24 invoices, 25 line items)
+│   ├── test_queries.sql              # Automated query regression tests
+│   └── verify_schema.sql             # Automated constraint verification suite
+├── .gitignore                        # Excludes SQLite binaries (*.db) and OS artifacts
+└── README.md                         # Project overview and documentation
 ```
 
 ---
 
 ## Technical Limitations & Assumptions
 
-- **Synthetic Nature:** The dataset is intentionally modeled to provide controlled test fixtures. It does not reflect real business fraud or non-compliance in Kosovo.
-- **Gross-of-VAT Award Baseline:** For the purposes of this MVP, `procurement_awards.recorded_award_value` is evaluated directly against invoice gross totals (`recorded_total`). In complex public procurement environments, award values may be defined net of VAT or modified through formal contract annexes.
-- **SQLite Floating-Point Affinity:** SQLite lacks native fixed-point arbitrary precision arithmetic (DECIMAL). While `ROUND(..., 2)` eliminates rounding artifacts for our dataset, high-concurrency enterprise accounting typically relies on PostgreSQL fixed-point decimals or integer-cent storage.
+- **Synthetic nature.** The dataset is intentionally modeled to provide controlled test fixtures. It does not reflect real business fraud or non-compliance in Kosovo.
+- **Recorded award value as baseline.** `procurement_awards.recorded_award_value` is compared directly against invoice gross totals. In complex public procurement, award values may be net of VAT or modified by formal contract annexes. Query 4's output is a candidate for investigation, not proof of an unauthorized contract breach.
+- **SQLite numeric affinity.** SQLite lacks native fixed-point arbitrary precision arithmetic. `ROUND(..., 2)` eliminates rounding artifacts for the dataset at this scale, but high-concurrency enterprise accounting would typically rely on PostgreSQL `NUMERIC` or integer-cent storage.
+- **VAT scope.** Only the 18% standard and 8% reduced rates are audited. Exempt supplies and reduced-rate categories outside the MVP's documented scope are not checked.
 
 ---
 
 ## Performance Observations
 
-In a local test environment, the full suite of 5 analytical audit queries executes in **under 90 milliseconds combined** (averaging ~12 milliseconds per query). The most complex aggregation (Query 4: Award Overrun) completes in 33 milliseconds.
+At the demonstration volume (24 invoices, 25 line items, 4 awards, 4 vendors), all audit queries execute in a few milliseconds each on a local SQLite 3 instance. To reproduce the measurement:
 
-At our demonstration volume (24 invoices and 25 line items), the query planner operates almost entirely in-memory, meaning table scans and index lookups execute with negligible latency. However, the schema deliberately defines dedicated secondary indexes:
-- `idx_invoices_award_id`: Optimizes Query 4 by enabling index-driven aggregation and filtering of cumulative invoice sums by procurement contract ceiling.
-- `idx_invoices_billing_vendor`: Optimizes Query 5 by indexing the join and grouping operations across vendors and submitted payment claims.
+```powershell
+sqlite3 audit.db
+sqlite> .timer on
+sqlite> .read sql/audit_queries.sql
+```
 
-These indexes demonstrate relational indexing best practices required when scaling to municipal production volumes involving tens of thousands of annual procurement transactions.
+Record the reported wall-clock times alongside your SQLite version (`sqlite3 --version`) if you intend to quote them, because the numbers are specific to your machine.
+
+The schema deliberately defines two secondary indexes:
+
+- `idx_invoices_award_id`: supports Query 4's aggregation of invoice sums by award.
+- `idx_invoices_billing_vendor`: supports Query 5's join and grouping by billing vendor.
+
+These indexes demonstrate indexing practice that would matter at municipal production volumes (tens of thousands of annual procurement transactions), even though the current dataset is small enough that they have negligible impact on observed latency.
 
 ---
 
 ## Future Improvements
 
-1. **Vendor Risk Summary View (Optional Extension):** Implement a materialized or standard SQL view (`CREATE VIEW v_vendor_risk_summary AS ...`) that automatically rolls up duplicate invoice counts, arithmetic errors, unauthorized third-party claims, and total financial exposure into a unified, reusable scoring model for auditors.
-2. **Production Engine Migration (PostgreSQL):** Migrate the DDL schema to PostgreSQL to take advantage of native arbitrary-precision `NUMERIC(12,2)` fixed-point arithmetic, custom enum types for procurement categories, and strict connection-level foreign key enforcement by default.
-3. **Application & Reporting Layer:** Develop a lightweight Python CLI or FastAPI service to automate the ingestion of raw municipal CSV files and export formatted Excel/PDF audit exception packages for municipal treasury teams.
-4. **Automated KRPP Ingestion Pipeline:** Build an ETL connector to ingest authentic public tender award metadata directly from Kosovo's Open Contracting Data Standard (OCDS) API, automatically reconciling published award baselines against internal treasury invoice submissions.
+1. **Vendor exception summary view.** A materialized or standard SQL view (`CREATE VIEW v_vendor_exception_summary AS ...`) rolling up duplicate counts, arithmetic flags, vendor-mismatch counts, and total financial exposure into a reusable auditor-facing summary.
+2. **PostgreSQL migration.** Move the DDL to PostgreSQL for arbitrary-precision `NUMERIC(12,2)` fixed-point arithmetic, enum types for procurement categories, and connection-level foreign key enforcement by default.
+3. **Application and reporting layer.** A lightweight Python CLI or FastAPI service that ingests raw municipal CSV files and exports formatted Excel/PDF audit exception packages.
+4. **Automated KRPP ingestion pipeline.** An ETL connector that ingests authentic public tender metadata from Kosovo's OCDS API and reconciles published award baselines against internal treasury invoice submissions.
